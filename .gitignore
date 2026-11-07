@@ -1,0 +1,22 @@
+﻿# upstream reference sources (fetched by tools/fetch_refs.ps1)
+ref/
+
+# build output
+build/
+build*/
+dist/
+*.obj
+*.o
+*.map
+*.lnk
+*.err
+*.wav
+*.exe
+!docs/**/*.exe
+
+# local scratch / editor
+*.log
+*.tmp
+Thumbs.db
+.vs/
+.vscode/
