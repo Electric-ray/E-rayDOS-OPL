@@ -31,7 +31,7 @@ BuildVariant 'build16nf' 'opl2,nofp' ''
 
 # TSR (no-FP engine; no -fpi87 anywhere)
 $inc = "-I$root\src"
-cmd /c "wcc -zq -bt=dos -mm -3 -ox -s $inc -fo=build16nf\pcspk16.obj src\pcspk16.c";  if ($LASTEXITCODE) { throw 'pcspk16.c' }
+cmd /c "wcc -zq -bt=dos -mm -3 -ox -s $inc -dEOPL_PDM -fo=build16nf\pcspk16.obj src\pcspk16.c";  if ($LASTEXITCODE) { throw 'pcspk16.c' }
 cmd /c "wcc -zq -bt=dos -mm -3 -ox -s $inc -fo=build16nf\eopl.obj src\eopl.c";        if ($LASTEXITCODE) { throw 'eopl.c' }
 cmd /c "wasm -zq -fo=build16nf\trapglue.obj src\trapglue.asm";                         if ($LASTEXITCODE) { throw 'trapglue.asm' }
 cmd /c "wcc -zq -bt=dos -mm -3 -ox -s $inc -fo=build16\eopltest.obj test\eopltest.c"; if ($LASTEXITCODE) { throw 'eopltest.c' }

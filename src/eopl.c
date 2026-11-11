@@ -9,7 +9,7 @@
  *   AL=02 status         ES:BX -> pcspk_stats_t, CX=sample rate, DX=resident PSP
  *   AL=03 uninstall      AL=0 ok / 1 vector hooked by someone else / 2 INT 2Fh hooked by someone else / 3 QEMM chain could not be unhooked
  *   AL=04 trap info      ES:BX -> eopl_info_t          AL=05  far address of the trap handler (self test)
- * usage: EOPL [/RTC (default)|/PIT|/R:rate|/R:AUTO] [/Y:subblock] [/G:gain] [/C:chunk] [/W:lowwater] [/NOPATCH] [/NOTRAP] [/DIAG]
+ * usage: EOPL [/RTC (default)|/PIT|/R:rate|/R:AUTO] [/Y:subblock] [/G:gain] [/B:bias] [/PDM[:1..6]] [/C:chunk] [/W:lowwater] [/NOPATCH] [/NOTRAP] [/DIAG]
  *        | /S status | /D diagnostics dump | /U uninstall */
 #include <dos.h>
 #include <i86.h>
@@ -117,8 +117,8 @@ static void trap_body(void)
             info.w389++;
             if (op_addr == 4) op_timer = (unsigned char)t_ax;   /* timer control: needed for the status emulation */
             log_write(op_addr, (unsigned char)t_ax);
-            oplc_write_port(0, op_addr);
-            oplc_write_port(1, (u8)t_ax);
+            pcspk_opl_port(0, op_addr);
+            pcspk_opl_port(1, (unsigned)(t_ax & 0xFF));
         }
     } else {                                                /* IN: AdLib status register */
         unsigned ax = t_ax & ~0xFFu;
@@ -313,8 +313,12 @@ static void show_status(const pcspk_stats_t __far *st, const eopl_info_t __far *
         out("\r\n  measured IRQ rate: avg="); outnum(st->rate_batches * 149148UL / st->rate_sum);
         out(" Hz  slowest="); outnum(149148UL / st->rate_max);
         out(" Hz  fastest="); outnum(149148UL / st->rate_min);
-        out(" Hz  (nominal 8192, BIOS-tick resolution ~5%, batches="); outnum(st->rate_batches); out(")");
+        out(" Hz  (nominal "); outnum(rate); out(", BIOS-tick resolution ~5%, batches="); outnum(st->rate_batches); out(")");
     }
+    out("\r\n  idle mute (speaker off during silence): "); outnum(st->mutes); out(" times   PIT ch2 read-back: ");
+    if (st->readback_ok) out("works"); else { out("NOT supported (ch2 guard off), raw="); outhex2((unsigned)st->readback_raw); }
+    if (st->nest_chunks) { out("\r\n  NEST mode: chunks="); outnum(st->nest_chunks); out("  queued OPL writes="); outnum(st->wq_queued); out("  deepest queue="); outnum(st->wq_max); out("  DROPPED="); outnum(st->wq_drops); }
+    if (!st->clock_rtc) { out("\r\n  PIT ch0 re-asserted after a program reprogrammed it: "); outnum(st->ch0_fixed); out(" times"); }
     out("\r\n  sample-clock vector still ours: "); out(in->vec_ours ? "yes" : "NO (a program took over INT 8/70h)");
     if (in->diag) {
         out("\r\n  [diag] Sound Blaster port accesses (220h-22Fh)="); outnum(in->sb_access); out("  ports seen mask="); outhex2(in->sb_ports >> 8); outhex2(in->sb_ports);
@@ -350,8 +354,8 @@ static void show_dump(const eopl_info_t __far *in)
 
 int main(int argc, char **argv)
 {
-    int i, id, do_u = 0, do_s = 0, do_d = 0, notrap = 0, use_rtc = 0, diag = 0, want_pit = 0;
-    unsigned rate = 0, chunk = 0, water = 0, paras, dg, env, ysub = 0, ysub_set = 0, gain = 0;
+    int i, id, do_u = 0, do_s = 0, do_d = 0, notrap = 0, use_rtc = 0, diag = 0, want_pit = 0, nest = 0, nofix = 0;
+    unsigned rate = 0, chunk = 0, water = 0, paras, dg, env, ysub = 0, ysub_set = 0, gain = 0, bias = 0, pdm = 0;
     union REGS o; struct SREGS sr;
 
     _asm { mov top_sp, sp }
@@ -363,8 +367,11 @@ int main(int argc, char **argv)
         if (starts_with(a + 1, "nopatch")) { cfg_patch = 0; info.patch_enabled = 0; continue; }
         if (starts_with(a + 1, "notrap")) { notrap = 1; continue; }
         if (starts_with(a + 1, "diag")) { diag = 1; continue; }
-        if (starts_with(a + 1, "rtc")) { use_rtc = 1; continue; }
+        if (starts_with(a + 1, "rtc")) { use_rtc = 1; continue; }   /* /RTC: RTC periodic interrupt, 8192 Hz (default) */
+        if (starts_with(a + 1, "pdm")) { pdm = (a[4] == ':') ? (unsigned)parse_num(a + 5) : 1u; if (!pdm || pdm > 6) pdm = 1; continue; }   /* /PDM[:1|2|3] pulse-density output */
         if (starts_with(a + 1, "pit")) { want_pit = 1; continue; }
+        if (starts_with(a + 1, "nest")) { nest = 1; continue; }
+        if (starts_with(a + 1, "nofix")) { nofix = 1; continue; }
         switch (a[1] | 0x20) {
         case 'u': do_u = 1; break;
         case 's': do_s = 1; break;
@@ -374,6 +381,7 @@ int main(int argc, char **argv)
         case 'w': water = parse_num(a + 3); break;
         case 'y': ysub = parse_num(a + 3); ysub_set = 1; break;
         case 'g': gain = parse_num(a + 3); break;
+        case 'b': bias = parse_num(a + 3); break;
         }
     }
     id = find_installed();
@@ -405,14 +413,18 @@ int main(int argc, char **argv)
     if (id < 0) { out("EOPL: no free INT 2Fh multiplex id.\r\n"); return 3; }
     mx_id = (unsigned char)id;
 
-    if (use_rtc) rate = 8192;
+    if (use_rtc) rate = 8192u;
     else if (!rate) { out("EOPL: measuring CPU speed...\r\n"); rate = pick_rate(); }
     rate_sel = rate;
     oplc_init(OPLC_OPL2, rate);
-    if (!(use_rtc ? pcspk_open_rtc(0, gen_cb) : pcspk_open(rate, 0, gen_cb))) { out("EOPL: cannot start the speaker driver.\r\n"); return 4; }
+    if (pdm) { if (pdm == 2) pcspk_set_pdm(16, 48); else if (pdm == 3) pcspk_set_pdm(28, 75); else if (pdm == 4) pcspk_set_pdm(8, 75); else if (pdm == 5) pcspk_set_pdm(5, 75); else if (pdm == 6) pcspk_set_pdm(3, 75); else pcspk_set_pdm(20, 75); if (!gain) gain = 4; }
+    if (!(use_rtc ? pcspk_open_rtc(pdm ? 2 : 0, gen_cb) : pcspk_open(rate, pdm ? 2 : 0, gen_cb))) { out("EOPL: cannot start the speaker driver.\r\n"); return 4; }
     pcspk_set_assist(1, chunk);
     if (ysub_set) pcspk_set_sub(ysub);
+    if (nest) pcspk_set_nest(1);
+    if (nofix) pcspk_set_fix0(0);
     if (gain) pcspk_set_gain((u32)(gain > 16 ? 16 : gain) * 256UL);
+    if (bias) pcspk_set_bias(bias > 120 ? 120 : bias);                  /* /B:n  PWM rail bias: silence = n LOW ticks (smaller n = quieter SMI ticks, less headroom; use with /G) */
     if (water) pcspk_set_water(water);
     if (diag) { pcspk_set_diag(1); info.diag = 1; }
     old2f = _dos_getvect(0x2F);
@@ -435,7 +447,7 @@ int main(int argc, char **argv)
     dg = FP_SEG((void __far *)&rate_sel);                    /* DGROUP segment */
     paras = (dg - my_psp) + ((top_sp + 80u) >> 4) + 1;       /* PSP .. end of DGROUP (incl. the small startup stack) */
     out("EOPL installed: OPL2 -> PC speaker, "); out(use_rtc ? "RTC clock " : "PIT clock "); outnum(rate); out(" Hz, ");
-    out(info.trap_mode ? "AdLib trapped via QEMM QPI" : "no port trap"); if (diag) out(", DIAG on");
+    out(info.trap_mode ? "AdLib trapped via QEMM QPI" : "no port trap"); if (pdm) out(", pulse-density output"); if (diag) out(", DIAG on");
     out(", multiplex id "); outnum((unsigned long)id); out(", resident "); outnum((unsigned long)paras * 16UL); out(" bytes.\r\n");
     _dos_keep(0, paras);
     return 0;

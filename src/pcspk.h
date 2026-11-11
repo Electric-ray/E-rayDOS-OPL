@@ -38,8 +38,24 @@ typedef struct {                  /* NOTE: new fields are only ever appended (te
     u32 rate_max;     /* slowest batch (ticks); nominal batch = 18.2 ticks */
     u32 rate_min;     /* fastest batch (ticks) */
     u32 agc_gain;     /* current automatic gain (8.8 fixed point, 256 = x1); 0 = fixed gain */
+    /* --- real-hardware robustness --- */
+    u32 mutes;        /* times the speaker was disconnected after silence (idle muting) */
+    u32 readback_ok;  /* 1 if the PIT channel-2 read-back command works (guard uses it only then) */
+    u32 nest_chunks;  /* chunks synthesized in /NEST mode (IF=1) */
+    u32 wq_queued, wq_drops, wq_max;   /* /NEST: OPL writes queued by nested handlers, dropped on overflow, deepest queue */
+    u32 ch0_fixed;    /* PIT clock: times PIT ch0 was found reprogrammed by a program and restored */
+    u32 readback_raw; /* byte read back right after programming ch2 (expected x0x10 in bits 5-0) */
 } pcspk_stats_t;
 
+void pcspk_set_fix0(int on);        /* PIT clock: re-assert ch0 when a program reprograms it (default on) */
+typedef struct { u32 n, sum; unsigned nominal, max; u32 n15, n5, n20; u32 ev_idx[24]; unsigned ev_gap[24]; unsigned nev; } pcspk_lat_t;   /* noise lab: IRQ-to-IRQ gaps in PIT ch0 counter units */
+const pcspk_lat_t *pcspk_lat(void);
+void pcspk_lat_reset(void);
+void pcspk_set_pdm(unsigned nlo, unsigned nhi);   /* experimental (-dEOPL_PDM): output mode 2 = pulse density, N range (call before open; open with mode 2) */
+void pcspk_set_bias(unsigned c0);   /* PWM rail bias (mode 0): 0 = off; n = silence at n LOW ticks per period, full scale = +-n ticks (call after open) */
+void pcspk_set_dbg(unsigned f);   /* noise lab only (needs -dNLAB_DEBUG): 1 no guard, 2 no rate meter, 4 PIT clock skips the BIOS INT 8 chain */
+void pcspk_set_nest(int on);        /* 16-bit build: synthesize with interrupts enabled (nested); OPL writes from nested handlers are queued */
+void pcspk_opl_port(unsigned port, unsigned val);   /* OPL port write that is safe against nested synthesis (call with IF=0 on the private stack) */
 void pcspk_set_sub(unsigned sub);   /* 16-bit build: sub-block size for ISR synthesis (RTC clock); 0 disables the interrupt windows. Call after open. */
 
 void pcspk_set_gain(u32 gain_256);  /* 8.8 fixed point, 256 = x1.0; 0 = automatic gain control (16-bit build default) */

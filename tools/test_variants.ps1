@@ -2,7 +2,7 @@
 #   gen16 (full, FP)  vs  gen16o2 (OPL2-only, FP)  vs  gen16nf (OPL2-only, no FP, precomputed tables)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent; $b = "$root\build"
-$rates = 8000, 11025, 16000, 22050
+$rates = 8000, 8192, 11025, 16000, 22050
 $exes  = 'gen16', 'gen16o2', 'gen16nf'
 $lines = @('@echo off', "mount c $b", 'c:', 'echo start > tv.txt')
 foreach ($r in $rates) { foreach ($e in $exes) { $lines += "echo $e $r >> tv.txt"; $lines += "$e opl2 $r 3 tv.wav 9 >> tv.txt" } }
